@@ -1,0 +1,44 @@
+{
+  "name": "sweepstacx",
+  "version": "0.1.0",
+  "description": "Repo sweeper for modern dev stacks: scan, report, patch.",
+  "type": "module",
+  "bin": {
+    "sweepstacx": "bin/sweepstacx"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "scripts": {
+    "build": "echo \"No build needed (ESM)\"",
+    "lint": "node -e \"console.log('TODO: add eslint')\"",
+    "test": "node -e \"console.log('TODO: add tests')\""
+  },
+  "keywords": [
+    "cli",
+    "code-quality",
+    "refactor",
+    "dead-code",
+    "duplicates",
+    "repo"
+  ],
+  "author": "You",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YOUR-USERNAME/SweepstacX.git"
+  },
+  "bugs": {
+    "url": "https://github.com/YOUR-USERNAME/SweepstacX/issues"
+  },
+  "homepage": "https://github.com/YOUR-USERNAME/SweepstacX#readme",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "fast-glob": "^3.3.3",
+    "picocolors": "^1.1.1"
+  }
+}

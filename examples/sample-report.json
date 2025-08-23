@@ -1,0 +1,26 @@
+{
+  "repo": "sample-project",
+  "root": "/home/inmoa/SweepstacX/examples/sample-project",
+  "scanned_at": "2025-08-22T06:39:15.536Z",
+  "stats": {
+    "files_scanned": 3,
+    "dead_files": 0,
+    "unused_imports": 2,
+    "duplicate_blocks": 0,
+    "stale_configs": 0,
+    "loc_removed": 0
+  },
+  "issues": [
+    {
+      "type": "unused_import",
+      "file": "src/Button.js",
+      "token": "React"
+    },
+    {
+      "type": "unused_import",
+      "file": "src/Button.js",
+      "token": "clsx"
+    }
+  ],
+  "patches": []
+}

@@ -1,0 +1,137 @@
++import fg from 'fast-glob';
++import pc from 'picocolors';
++import { writeJSON, ensureDir, writeText, exists } from '../utils/fs.js';
++import { basename, resolve } from 'node:path';
++import { readFile } from 'node:fs/promises';
++
++const CACHE_DIR = '.sweepstacx';
++const CACHE_FILE = `${CACHE_DIR}/scan.json`;
++
++export default async function scanCmd({ path = '.', lang = 'js', verbose = false }) {
++  const root = resolve(process.cwd(), path);
++  if (verbose) console.log(pc.dim(`Scanning ${root} (lang=${lang})`));
++
++  const exts = lang === 'py' ? ['py'] : ['js', 'jsx', 'ts', 'tsx'];
++  const patterns = exts.map((e) => `**/*.${e}`);
++  const ignore = ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.next/**', '**/.git/**'];
++  const files = await fg(patterns, { cwd: root, ignore, dot: false, absolute: true });
++
++  const stats = {
++    files_scanned: files.length,
++    dead_files: 0,
++    unused_imports: 0,
++    duplicate_blocks: 0,
++    stale_configs: 0,
++    loc_removed: 0
++  };
++
++  const issues = [];
++  const tinyFileFingerprints = new Map();
++
++  for (const f of files) {
++    const rel = f.replace(`${root}/`, '');
++    let text = '';
++    try { text = await readFile(f, 'utf8'); } catch { continue; }
++
++    // Improved unused-import detection
++    // Supports:
++    //  - default import: import A from 'mod'
++    //  - namespace:     import * as ns from 'mod'
++    //  - named:         import { a, b as bb } from 'mod'
++    //  - mixed:         import A, { b, c as cc } from 'mod'
++    const importRegex = /^import\s+(.+?)\s+from\s+['"][^'"]+['"];?/gm;
++    const importMatches = [...text.matchAll(importRegex)];
++    for (const m of importMatches) {
++      const full = m[0];
++      const spec = m[1].trim();
++      const idents = extractLocalIdents(spec);
++      if (!idents.length) continue;
++      const body = text.replace(full, '');
++      for (const ident of idents) {
++        const used = new RegExp(`\\b${escapeRegex(ident)}\\b`).test(body);
++        if (!used) {
++          stats.unused_imports++;
++          issues.push({ type: 'unused_import', file: rel, token: ident });
++        }
++      }
++    }
++
++    // Tiny duplicate heuristic (unchanged)
++    if (text.length > 0 && text.length <= 200) {
++      const key = `${basename(f)}:${hashStr(text)}`;
++      if (tinyFileFingerprints.has(key)) {
++        stats.duplicate_blocks++;
++        issues.push({ type: 'duplicate_block', file: rel, duplicate_of: tinyFileFingerprints.get(key) });
++      } else {
++        tinyFileFingerprints.set(key, rel);
++      }
++    }
++  }
++
++  const payload = {
++    repo: basename(root),
++    root,
++    scanned_at: new Date().toISOString(),
++    stats,
++    issues,
++    patches: []
++  };
++
++  await ensureDir(CACHE_DIR);
++  await writeJSON(CACHE_FILE, payload);
++  await writeText(`${CACHE_DIR}/.last`, String(Date.now()));
++
++  console.log(
++    pc.green(`✓ Scan complete.`),
++    pc.dim(`files=${stats.files_scanned}, unused_imports=${stats.unused_imports}, duplicates=${stats.duplicate_blocks}`)
++  );
++  if (!(await exists(CACHE_FILE))) throw new Error('Failed to write scan cache.');
++}
++
++// helpers
++function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
++function hashStr(s) { let h=0; for (let i=0;i<s.length;i++) h=(h<<5)-h+s.charCodeAt(i)|0; return (h>>>0).toString(16); }
++
++/**
++ * Extract local identifiers from an import spec between 'import' and 'from'.
++ * Examples:
++ *   "fs"                            -> ["fs"]
++ *   "* as ns"                       -> ["ns"]
++ *   "{ readFile, writeFile as wf }" -> ["readFile","wf"]
++ *   "A, { b, c as cc }"             -> ["A","b","cc"]
++ *   "A, * as ns"                    -> ["A","ns"]
++ */
++function extractLocalIdents(spec) {
++  let s = spec.trim();
++  const idents = [];
++
++  // Default import (may be followed by comma and more)
++  if (!s.startsWith('{') && !s.startsWith('*')) {
++    const parts = s.split(',');
++    const def = parts.shift()?.trim();
++    if (def) idents.push(def);
++    s = parts.join(',').trim();
++  }
++
++  // Namespace import: * as ns
++  const nsMatch = s.match(/\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
++  if (nsMatch) idents.push(nsMatch[1]);
++
++  // Named imports: { a, b as bb }
++  const namedMatch = s.match(/\{([\s\S]*?)\}/);
++  if (namedMatch) {
++    const inner = namedMatch[1]
++      .split(',')
++      .map(p => p.trim())
++      .filter(Boolean);
++    for (const seg of inner) {
++      const m = seg.match(/^([A-Za-z_$][A-Za-z0-9_$]*)\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)$/)
++            || seg.match(/^([A-Za-z_$][A-Za-z0-9_$]*)$/);
++      if (!m) continue;
++      const local = m[2] || m[1];
++      idents.push(local);
++    }
++  }
++
++  return idents;
++}

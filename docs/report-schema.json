@@ -1,0 +1,49 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SweepstacX Report Schema",
+  "type": "object",
+  "properties": {
+    "repo": { "type": "string" },
+    "scanned_at": { "type": "string", "format": "date-time" },
+    "stats": {
+      "type": "object",
+      "properties": {
+        "files_scanned": { "type": "integer" },
+        "dead_files": { "type": "integer" },
+        "unused_imports": { "type": "integer" },
+        "duplicate_blocks": { "type": "integer" },
+        "stale_configs": { "type": "integer" },
+        "loc_removed": { "type": "integer" }
+      },
+      "required": ["files_scanned"]
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string" },
+          "file": { "type": "string" },
+          "lines": { "type": "string" },
+          "token": { "type": "string" },
+          "duplicate_of": { "type": "string" }
+        },
+        "required": ["type", "file"]
+      }
+    },
+    "patches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "description": { "type": "string" },
+          "loc": { "type": "integer" },
+          "diff_file": { "type": "string" }
+        },
+        "required": ["id", "description"]
+      }
+    }
+  },
+  "required": ["repo", "scanned_at", "stats", "issues"]
+}

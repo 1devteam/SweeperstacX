@@ -1,0 +1,15 @@
+{
+  "repo": "my-repo",
+  "root": "/home/inmoa/dev/my-repo",
+  "scanned_at": "2025-08-22T18:23:46.715Z",
+  "stats": {
+    "files_scanned": 0,
+    "dead_files": 0,
+    "unused_imports": 0,
+    "duplicate_blocks": 0,
+    "stale_configs": 0,
+    "loc_removed": 0
+  },
+  "issues": [],
+  "patches": []
+}

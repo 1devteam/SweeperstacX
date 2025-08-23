@@ -1,0 +1,15 @@
+{
+  "repo": "smx-mono",
+  "root": "/home/inmoa/dev/smx-mono",
+  "scanned_at": "2025-08-22T07:42:32.701Z",
+  "stats": {
+    "files_scanned": 23,
+    "dead_files": 0,
+    "unused_imports": 0,
+    "duplicate_blocks": 0,
+    "stale_configs": 0,
+    "loc_removed": 0
+  },
+  "issues": [],
+  "patches": []
+}
