@@ -1,6 +1,6 @@
 {
   "name": "sweepstacx",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "Repo sweeper for modern dev stacks: scan, report, patch.",
   "type": "module",
   "bin": {

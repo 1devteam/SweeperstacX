@@ -1,15 +1,36 @@
 {
-  "repo": "my-repo",
-  "root": "/home/inmoa/dev/my-repo",
-  "scanned_at": "2025-08-22T18:23:46.715Z",
+  "repo": "SweeperstacX",
+  "root": "/home/inmoa/SweepstacX/SweeperstacX",
+  "scanned_at": "2025-08-23T23:29:26.173Z",
   "stats": {
-    "files_scanned": 0,
+    "files_scanned": 7,
     "dead_files": 0,
-    "unused_imports": 0,
+    "unused_imports": 4,
     "duplicate_blocks": 0,
     "stale_configs": 0,
     "loc_removed": 0
   },
-  "issues": [],
+  "issues": [
+    {
+      "type": "unused_import",
+      "file": "tests/python-unused-imports.fixture.py",
+      "token": "system"
+    },
+    {
+      "type": "unused_import",
+      "file": "tests/python-unused-imports.fixture.py",
+      "token": "c"
+    },
+    {
+      "type": "unused_import",
+      "file": "tests/python-unused-imports.fixture.py",
+      "token": "floor"
+    },
+    {
+      "type": "unused_import",
+      "file": "tests/python-unused-imports.fixture.py",
+      "token": "defaultdict"
+    }
+  ],
   "patches": []
 }

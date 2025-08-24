@@ -1,3 +1,4 @@
+// src/commands/patch.js
 import { readJSON, ensureDir, writeText } from '../utils/fs.js';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -9,37 +10,40 @@ export default async function patchCmd({ apply = false, dryRun = false }) {
   if (!scan) throw new Error('No scan cache found. Run `sweepstacx scan` first.');
   await ensureDir('patches');
 
+  // group tokens by file
+  const byFile = new Map();
+  for (const issue of scan.issues || []) {
+    if (issue.type !== 'unused_import') continue;
+    if (!byFile.has(issue.file)) byFile.set(issue.file, new Set());
+    byFile.get(issue.file).add(issue.token);
+  }
+
   const changes = [];
   let counter = 1;
 
-  // group issues by file, only handle unused_import in v0.1
-  const byFile = new Map();
-  for (const issue of scan.issues) {
-    if (issue.type !== 'unused_import') continue;
-    if (!byFile.has(issue.file)) byFile.set(issue.file, []);
-    byFile.get(issue.file).push(issue.token);
-  }
-
-  for (const [relPath, tokens] of byFile.entries()) {
+  for (const [relPath, tokenSet] of byFile.entries()) {
     const absPath = join(scan.root, relPath);
-    let original;
-    try {
-      original = await readFile(absPath, 'utf8');
-    } catch {
-      continue; // skip missing files
+    let src;
+    try { src = await readFile(absPath, 'utf8'); } catch { continue; }
+
+    const ext = relPath.split('.').pop()?.toLowerCase();
+    let result;
+    if (ext === 'py') {
+      result = removeUnusedImportsPython(src, [...tokenSet]);
+    } else if (ext === 'js' || ext === 'jsx' || ext === 'ts' || ext === 'tsx') {
+      result = removeUnusedImportsES(src, [...tokenSet]);
+    } else {
+      continue; // unsupported for patching
     }
 
-    const { modified, edits } = removeUnusedImports(original, tokens);
-    if (edits.length === 0 || modified === original) continue;
+    const { modified, edits } = result;
+    if (!edits.length || modified === src) continue;
 
     const diffName = `patches/patch-${String(counter).padStart(3, '0')}.diff`;
-    await writeText(diffName, makePseudoDiff(relPath, original, modified, edits));
+    await writeText(diffName, makePseudoDiff(relPath, src, modified, edits));
     counter++;
 
-    if (apply && !dryRun) {
-      await writeFile(absPath, modified, 'utf8');
-    }
-
+    if (apply && !dryRun) await writeFile(absPath, modified, 'utf8');
     changes.push({ file: relPath, edits, diff: diffName });
   }
 
@@ -49,113 +53,208 @@ export default async function patchCmd({ apply = false, dryRun = false }) {
   }
 
   console.log(`Generated ${changes.length} patch file(s) in ./patches`);
-  if (apply) {
-    if (dryRun) {
-      console.log('[dry-run] Would modify:', changes.map(c => c.file).join(', '));
-    } else {
-      console.log('Applied edits directly to files (revert with git checkout or git reset --hard).');
-    }
-  }
+  if (apply) console.log('Applied edits directly to files (revert with git checkout or git reset --hard).');
 }
 
-// --- helpers ---
+/* ---------------- JS/TS (ES imports) ---------------- */
 
-function removeUnusedImports(source, tokensToRemove) {
-  const lines = source.split('\n');
+function removeUnusedImportsES(source, tokensToRemove) {
   const edits = [];
+  // multi-line tolerant import ... from 'x'; with optional "type" and trailing comments
+  const re = /(^|\n)(?<indent>[ \t]*)import(?:\s+type)?\s+(?<spec>[\s\S]*?)\s+from\s+(?<from>['"][^'"]+['"])\s*;?[ \t]*(?:(?<comment>\/\/[^\n]*)|\/\*[\s\S]*?\*\/)?[ \t]*$/gm;
 
-  const importRe = /^(\s*)import\s+(.+?)\s+from\s+(['"][^'"]+['"]);?\s*$/;
+  let out = source, m;
+  const replacements = [];
 
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(importRe);
-    if (!m) continue;
+  while ((m = re.exec(out)) !== null) {
+    const start = m.index + (m[1] ? m[1].length : 0);
+    const end = re.lastIndex;
+    const indent = m.groups.indent ?? '';
+    const specRaw = m.groups.spec;
+    const fromPart = m.groups.from;
+    const trailing = m.groups.comment ? ` ${m.groups.comment}` : '';
 
-    const indent = m[1] || '';
-    const spec = m[2].trim();
-    const fromPart = m[3];
+    const spec = specRaw.replace(/\s+/g, ' ').trim();
+    const parts = parseESImportSpec(spec);
+    if (!parts) continue;
 
-    const result = parseImportSpec(spec);
-    if (!result) continue;
-
-    const before = lines[i];
-    const removedHere = [];
-
+    const removed = new Set();
     for (const t of tokensToRemove) {
-      if (result.default === t) { result.default = null; removedHere.push(t); }
-      if (result.namespace === t) { result.namespace = null; removedHere.push(t); }
-      const beforeLen = result.named.length;
-      result.named = result.named.filter(n => n.local !== t);
-      if (result.named.length !== beforeLen) removedHere.push(t);
+      if (parts.default === t) { parts.default = null; removed.add(t); }
+      if (parts.namespace === t) { parts.namespace = null; removed.add(t); }
+      const lenBefore = parts.named.length;
+      parts.named = parts.named.filter(n => n.local !== t);
+      if (parts.named.length !== lenBefore) removed.add(t);
     }
+    if (!removed.size) continue;
 
-    if (!removedHere.length) continue;
-
-    const rebuilt = buildImportLine(indent, result, fromPart);
-
-    if (rebuilt === null) {
-      lines.splice(i, 1);
-      i--;
-      edits.push({ line: i + 2, action: 'remove-line', tokens: removedHere });
-      continue;
-    }
-
-    lines[i] = rebuilt;
-    edits.push({ line: i + 1, action: 'edit-line', tokens: removedHere });
+    const rebuilt = buildESImport(indent, parts, fromPart, trailing);
+    const replacement = rebuilt === null ? '' : rebuilt;
+    replacements.push({ start, end, replacement, tokens: [...removed] });
   }
 
-  return { modified: lines.join('\n'), edits };
+  if (!replacements.length) return { modified: source, edits };
+
+  replacements.sort((a, b) => b.start - a.start);
+  let text = out;
+  for (const r of replacements) {
+    text = text.slice(0, r.start) + r.replacement + text.slice(r.end);
+    const line = text.slice(0, r.start).split('\n').length;
+    edits.push({ line, action: r.replacement ? 'edit-line' : 'remove-line', tokens: r.tokens });
+  }
+  return { modified: text, edits };
 }
 
-function parseImportSpec(spec) {
-  let rest = spec;
-  let def = null;
-  let ns = null;
-  const named = [];
-
-  if (!rest.startsWith('{') && !rest.startsWith('*')) {
-    const parts = rest.split(',');
-    def = parts.shift()?.trim() || null;
-    rest = parts.join(',').trim();
+function parseESImportSpec(spec) {
+  let s = spec.trim(), def = null, ns = null, named = [];
+  if (!s.startsWith('{') && !s.startsWith('*')) {
+    const parts = s.split(',');
+    def = (parts.shift() || '').trim() || null;
+    s = parts.join(',').trim();
   }
-
-  {
-    const m = rest.match(/\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
-    if (m) ns = m[1];
-  }
-
-  {
-    const m = rest.match(/\{([\s\S]*?)\}/);
+  { const m = s.match(/\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)/); if (m) ns = m[1]; }
+  { const m = s.match(/\{([\s\S]*?)\}/);
     if (m) {
-      const inner = m[1].split(',').map(s => s.trim()).filter(Boolean);
+      const inner = m[1].split(',').map(x => x.trim()).filter(Boolean);
       for (const seg of inner) {
-        const m2 =
+        const mm =
           seg.match(/^([A-Za-z_$][A-Za-z0-9_$]*)\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)$/) ||
           seg.match(/^([A-Za-z_$][A-Za-z0-9_$]*)$/);
-        if (!m2) continue;
-        const imported = m2[2] ? m2[1] : m2[1];
-        const local = m2[2] ? m2[2] : m2[1];
+        if (!mm) continue;
+        const imported = mm[2] ? mm[1] : mm[1];
+        const local    = mm[2] ? mm[2] : mm[1];
         named.push({ imported, local });
       }
     }
   }
-
   if (!def && !ns && named.length === 0) return null;
   return { default: def, namespace: ns, named };
 }
 
-function buildImportLine(indent, parts, fromPart) {
-  const segments = [];
-  if (parts.default) segments.push(parts.default);
-  if (parts.namespace) segments.push(`* as ${parts.namespace}`);
+function buildESImport(indent, parts, fromPart, trailing) {
+  const segs = [];
+  if (parts.default) segs.push(parts.default);
+  if (parts.namespace) segs.push(`* as ${parts.namespace}`);
   if (parts.named.length) {
     const inner = parts.named
       .map(n => (n.imported === n.local ? n.local : `${n.imported} as ${n.local}`))
       .join(', ');
-    segments.push(`{ ${inner} }`);
+    segs.push(`{ ${inner} }`);
   }
-  if (!segments.length) return null;
-  return `${indent}import ${segments.join(', ')} from ${fromPart};`;
+  if (!segs.length) return null;
+  return `${indent}import ${segs.join(', ')} from ${fromPart};${trailing}\n`;
 }
+
+/* ---------------- Python imports ---------------- */
+
+function removeUnusedImportsPython(source, tokensToRemove) {
+  const edits = [];
+  let out = source;
+
+  // 1) from module import a, b as c, (multi-line allowed)
+  const reFrom = /(^|\n)(?<indent>[ \t]*)from[ \t]+(?<mod>[A-Za-z0-9_\.]+)[ \t]+import[ \t]+(?<list>\([^\)]*\)|[^\n#]+)(?<trail>[^\n]*)/gm;
+  out = replaceAll(out, reFrom, (match, prefix, indent, mod, list, trail, start, end) => {
+    const { items, hadParens } = parsePyFromList(list);
+    const beforeLen = items.length;
+    const kept = items.filter(it => !tokensToRemove.includes(it.local));
+    if (kept.length === beforeLen) return null; // no change
+    if (!kept.length) {
+      edits.push({ line: lineAt(out, start), action: 'remove-line', tokens: items.map(i => i.local) });
+      return { text: '', start, end };
+    }
+    const rebuiltList = kept.map(it => (it.alias ? `${it.name} as ${it.alias}` : it.name)).join(', ');
+    const listOut = hadParens ? `(${rebuiltList})` : rebuiltList;
+    const text = `${prefix}${indent}from ${mod} import ${listOut}${trail}\n`;
+    edits.push({ line: lineAt(out, start), action: 'edit-line', tokens: diffLocals(items, kept) });
+    return { text, start, end };
+  });
+
+  // 2) import pkg[, pkg2 as alias] (single line; common case)
+  const reImport = /(^|\n)(?<indent>[ \t]*)import[ \t]+(?<list>\([^\)]*\)|[^\n#]+)(?<trail>[^\n]*)/gm;
+  out = replaceAll(out, reImport, (match, prefix, indent, list, trail, start, end) => {
+    const { mods } = parsePyImportList(list);
+    const beforeLen = mods.length;
+    const kept = mods.filter(m => !tokensToRemove.includes(m.local));
+    if (kept.length === beforeLen) return null;
+    if (!kept.length) {
+      edits.push({ line: lineAt(out, start), action: 'remove-line', tokens: mods.map(m => m.local) });
+      return { text: '', start, end };
+    }
+    const rebuilt = kept.map(m => (m.alias ? `${m.module} as ${m.alias}` : m.module)).join(', ');
+    const text = `${prefix}${indent}import ${rebuilt}${trail}\n`;
+    edits.push({ line: lineAt(out, start), action: 'edit-line', tokens: diffLocals(mods, kept) });
+    return { text, start, end };
+  });
+
+  return { modified: out, edits };
+}
+
+// helpers for Python
+function parsePyFromList(listRaw) {
+  const hadParens = /^\s*\(/.test(listRaw);
+  const inner = listRaw.replace(/^\s*\(|\)\s*$/g, '');
+  const parts = inner.split(',').map(s => s.trim()).filter(Boolean);
+  const items = [];
+  for (const seg of parts) {
+    const m = seg.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/);
+    if (!m) continue;
+    const name = m[1]; const alias = m[2] || null;
+    items.push({ name, alias, local: alias || name });
+  }
+  return { items, hadParens };
+}
+
+function parsePyImportList(listRaw) {
+  const inner = listRaw.replace(/^\s*\(|\)\s*$/g, '');
+  const parts = inner.split(',').map(s => s.trim()).filter(Boolean);
+  const mods = [];
+  for (const seg of parts) {
+    const m = seg.match(/^([A-Za-z_][A-Za-z0-9_\.]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/);
+    if (!m) continue;
+    const module = m[1];
+    const alias = m[2] || null;
+    const local = alias || module.split('.')[0];
+    mods.push({ module, alias, local });
+  }
+  return { mods };
+}
+
+// generic replacer for the two Python patterns (passes correct groups)
+function replaceAll(text, regex, replacer) {
+  let m; const changes = [];
+  while ((m = regex.exec(text)) !== null) {
+    const start = m.index;
+    const end = regex.lastIndex;
+    const prefix = m[1] || '';
+    const indent = m.groups?.indent ?? '';
+    const trail = m.groups?.trail ?? '';
+    let out;
+
+    if (Object.prototype.hasOwnProperty.call(m.groups || {}, 'mod')) {
+      // from ... import ...
+      out = replacer(m[0], prefix, indent, m.groups.mod, m.groups.list, trail, start, end);
+    } else {
+      // import ...
+      out = replacer(m[0], prefix, indent, m.groups.list, trail, start, end);
+    }
+
+    if (!out) continue;
+    changes.push(out);
+  }
+  if (!changes.length) return text;
+  changes.sort((a, b) => b.start - a.start);
+  let outText = text;
+  for (const c of changes) outText = outText.slice(0, c.start) + c.text + outText.slice(c.end);
+  return outText;
+}
+
+function lineAt(text, index) { return text.slice(0, index).split('\n').length; }
+function diffLocals(beforeArr, afterArr) {
+  const afterSet = new Set(afterArr.map(x => x.local));
+  return beforeArr.map(x => x.local).filter(x => !afterSet.has(x));
+}
+
+/* ---------------- Diff preview ---------------- */
 
 function makePseudoDiff(relPath, before, after, edits) {
   const header = [
