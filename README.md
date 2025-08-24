@@ -10,6 +10,8 @@ Scan, report, and patch dead code, unused imports, duplicate logic, and stale co
 
 ---
 
+JS/TS and Python auto-patch for unused imports
+
 ## ​ Quick Start
 
 ```bash
