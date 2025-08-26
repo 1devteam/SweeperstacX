@@ -1,24 +1,19 @@
 name: CI
+
 on:
   push:
   pull_request:
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: '20' }
-      - run: npm ci
-      - run: npx vitest run
-      - name: Generate SweepstacX report
-        run: |
-          npx sweepstacx scan --path .
-          npx sweepstacx report --out ci-sweep
-      - name: Upload report artifacts
-        uses: actions/upload-artifact@v4
         with:
-          name: sweepstacx-report
-          path: |
-            ci-sweep.json
-            ci-sweep.md
+          node-version: '20.x'
+          cache: 'npm'
+      - run: npm ci
+      # If you add a build step later, uncomment:
+      # - run: npm run build
+      - run: npm test
