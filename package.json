@@ -11,7 +11,7 @@
     "src"
   ],
   "scripts": {
-    "build": "echo \"No build needed (ESM)\"",
+    "build": "echo 'no build step for CLI'",
     "lint": "echo \"TODO: add eslint\"",
     "test": "vitest run",
     "test:watch": "vitest"
