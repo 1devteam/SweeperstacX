@@ -1,0 +1,29 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'   # runs only when you push a version tag, e.g. v0.1.7
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Extract changelog entry
+        id: changelog
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          awk "/## \\[$VERSION\\]/,/## \\[/" CHANGELOG.md | sed '$d' > RELEASE_NOTES.md || true
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.changelog.outputs.version }}
+          release_name: SweepstacX ${{ steps.changelog.outputs.version }}
+          body_path: RELEASE_NOTES.md

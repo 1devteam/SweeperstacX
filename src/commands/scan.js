@@ -1,285 +1,161 @@
 import fg from 'fast-glob';
-import pc from 'picocolors';
-import { writeJSON, ensureDir, writeText, exists } from '../utils/fs.js';
-import { relative, resolve } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
+import { resolve, relative } from 'node:path';
 
-const CACHE_DIR = '.sweepstacx';
-const CACHE_FILE = `${CACHE_DIR}/scan.json`;
+export default async function runScan(opts = {}) {
+  const root = resolve(process.cwd(), opts.path || '.');
 
-export default async function scanCmd({ path = '.', lang = 'auto', verbose = false, quiet = false }) {
-  const root = resolve(process.cwd(), path);
+  const files = await fg(
+    [`${root}/**/*.js`, `${root}/**/*.mjs`, `${root}/**/*.cjs`],
+    { ignore: ['**/node_modules/**','**/dist/**','**/coverage/**','**/.git/**'], dot: false }
+  );
 
-  // Load optional ignore config
-  const cfg = await loadConfig(root);
-  const userIgnores = Array.isArray(cfg.ignore) ? cfg.ignore : [];
-  const baseIgnore = ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.next/**', '**/.git/**', '**/.venv/**', '**/venv/**', '**/__pycache__/**'];
-  const ignore = [...baseIgnore, ...userIgnores];
-
-  // Decide which extensions to scan
-  const { exts, label } = await decideExtensions(root, lang, ignore);
-
-  if (verbose) {
-    console.log(pc.dim(`Scanning ${root} (lang=${label}, exts=${exts.join(',')})`));
-    if (userIgnores.length) console.log(pc.dim(`Ignoring: ${userIgnores.join(', ')}`));
+  const warnings = [];
+  if (files.length === 0) {
+    const msg = 'No files matched scan patterns (*.js, *.mjs, *.cjs). Check --path or ignore globs.';
+    warnings.push(msg);
+    console.warn('⚠️  ' + msg);
   }
-
-  // Discover files
-  const patterns = exts.map((e) => `**/*.${e}`);
-  const files = await fg(patterns, { cwd: root, ignore, dot: false, absolute: true });
-
-  // Stats bucket
-  const stats = {
-    files_scanned: files.length,
-    dead_files: 0,
-    unused_imports: 0,
-    duplicate_blocks: 0,
-    stale_configs: 0,
-    loc_removed: 0
-  };
 
   const issues = [];
-  const tinyFileFingerprints = new Map();
-
-  // Per-file analysis
-  for (const f of files) {
-    const rel = relative(root, f);
-    let text = '';
-    try { text = await readFile(f, 'utf8'); } catch { continue; }
-
-    if (isJsTs(rel)) {
-      // --- JS/TS: Improved unused-import detection ---
-      const importRegex = /^import\s+(.+?)\s+from\s+['"][^'"]+['"];?/gm;
-      const importMatches = [...text.matchAll(importRegex)];
-      for (const m of importMatches) {
-        const full = m[0];
-        const spec = m[1].trim();
-        const idents = extractJsTsLocalIdents(spec);
-        if (!idents.length) continue;
-
-        const body = text.replace(full, ''); // exclude this import line
-        for (const ident of idents) {
-          const used = new RegExp(`\\b${escapeRegex(ident)}\\b`).test(body);
-          if (!used) {
-            stats.unused_imports++;
-            issues.push({ type: 'unused_import', file: rel, token: ident });
-          }
-        }
-      }
-    }
-
-    if (isPy(rel)) {
-      // --- Python: basic unused-import detection ---
-      const { locals, body } = extractPythonLocalsAndBody(text);
-      for (const name of locals) {
-        // Skip the common convention "_" wildcard for throwaway
-        if (name === '_') continue;
-        const used = new RegExp(`\\b${escapeRegex(name)}\\b`).test(body);
-        if (!used) {
-          stats.unused_imports++;
-          issues.push({ type: 'unused_import', file: rel, token: name });
-        }
-      }
-    }
-
-    // --- Tiny duplicate heuristic (language-agnostic) ---
-    if (text.length > 0 && text.length <= 200) {
-      const key = `${rel}:${hashStr(text)}`;
-      if (tinyFileFingerprints.has(key)) {
-        stats.duplicate_blocks++;
-        issues.push({ type: 'duplicate_block', file: rel, duplicate_of: tinyFileFingerprints.get(key) });
-      } else {
-        tinyFileFingerprints.set(key, rel);
-      }
+  for (const file of files) {
+    const src = await readFile(file, 'utf8');
+    const unused = detectUnusedImports(src);
+    for (const sym of unused) {
+      issues.push({
+        type: 'unused_import',
+        file: relative(process.cwd(), file),
+        symbol: sym,
+      });
     }
   }
 
-  // Cache payload
-  const payload = {
-    repo: root.split('/').pop(),
-    root,
-    scanned_at: new Date().toISOString(),
-    stats,
-    issues,
-    patches: []
+  const stats = {
+    files_scanned: files.length,
+    unused_imports: issues.filter(i => i.type === 'unused_import').length,
+    duplicate_blocks: 0,
+    dead_files: 0,
+    stale_configs: 0,
   };
 
-  await ensureDir(CACHE_DIR);
-  await writeJSON(CACHE_FILE, payload);
-  await writeText(`${CACHE_DIR}/.last`, String(Date.now()));
+  const report = {
+    meta: { tool: 'SweepstacX', version: '0.1.7', scanned_at: new Date().toISOString(), root },
+    warnings,
+    stats,
+    issues
+  };
 
-  if (!quiet) {
-    console.log(
-      pc.green(`✓ Scan complete.`),
-      pc.dim(`files=${stats.files_scanned}, unused_imports=${stats.unused_imports}, duplicates=${stats.duplicate_blocks}`)
-    );
-  }
-  if (!(await exists(CACHE_FILE))) throw new Error('Failed to write scan cache.');
+  await writeFile(resolve(process.cwd(), 'sweepstacx-report.json'), JSON.stringify(report, null, 2));
+  await writeFile(resolve(process.cwd(), 'sweepstacx-report.md'), renderMarkdown(report), 'utf8');
+
+  console.log(`✓ Scan complete. files=${stats.files_scanned}, unused_imports=${stats.unused_imports}, duplicates=${stats.duplicate_blocks}${warnings.length ? `, warnings=${warnings.length}` : ''}`);
 }
 
-/* ---------------- helpers ---------------- */
-
-async function loadConfig(root) {
-  try {
-    const raw = await readFile(resolve(root, '.sweepstacx.json'), 'utf8');
-    return JSON.parse(raw);
-  } catch { return {}; }
-}
-
-async function decideExtensions(root, lang, ignore) {
-  const jsTs = ['js', 'jsx', 'ts', 'tsx'];
-  const py = ['py'];
-
-  if (lang && lang !== 'auto') {
-    if (lang === 'py') return { exts: py, label: 'py' };
-    if (lang === 'js' || lang === 'ts') return { exts: jsTs, label: 'js/ts' };
-  }
-
-  const [jsHits, pyHits] = await Promise.all([
-    fg(jsTs.map(e => `**/*.${e}`), { cwd: root, ignore, dot: false, onlyFiles: true }),
-    fg(py.map(e => `**/*.${e}`),   { cwd: root, ignore, dot: false, onlyFiles: true })
-  ]);
-
-  const hasJs = jsHits.length > 0;
-  const hasPy = pyHits.length > 0;
-
-  if (hasJs && hasPy) return { exts: [...jsTs, ...py], label: 'js/ts+py' };
-  if (hasJs) return { exts: jsTs, label: 'js/ts' };
-  if (hasPy) return { exts: py, label: 'py' };
-
-  return { exts: jsTs, label: 'js/ts (fallback)' };
-}
-
-function isJsTs(path) { return /\.(m?js|jsx|ts|tsx)$/.test(path); }
-function isPy(path)   { return /\.py$/.test(path); }
-
-function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
-function hashStr(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h << 5) - h + s.charCodeAt(i) | 0; return (h >>> 0).toString(16); }
-
-/* ---------- JS/TS import parsing ---------- */
-
-function extractJsTsLocalIdents(spec) {
-  let s = spec.trim();
-  const idents = [];
-
-  // Default import
-  if (!s.startsWith('{') && !s.startsWith('*')) {
-    const parts = s.split(',');
-    const def = parts.shift()?.trim();
-    if (def) idents.push(def);
-    s = parts.join(',').trim();
-  }
-
-  // Namespace import: * as ns
-  const nsMatch = s.match(/\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
-  if (nsMatch) idents.push(nsMatch[1]);
-
-  // Named imports: { a, b as bb }
-  const namedMatch = s.match(/\{([\s\S]*?)\}/);
-  if (namedMatch) {
-    const inner = namedMatch[1].split(',').map(p => p.trim()).filter(Boolean);
-    for (const seg of inner) {
-      const m = seg.match(/^([A-Za-z_$][A-Za-z0-9_$]*)\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)$/)
-            || seg.match(/^([A-Za-z_$][A-Za-z0-9_$]*)$/);
-      if (!m) continue;
-      const local = m[2] || m[1];
-      idents.push(local);
-    }
-  }
-  return idents;
-}
-
-/* ---------- Python import parsing ---------- */
 /**
- * Very lightweight parser to extract local names introduced by imports:
- *  - import a
- *  - import a as b
- *  - import a, b as bb
- *  - from pkg.mod import a, b as bb
- *  - from pkg.mod import (
- *        a,
- *        b as bb,
- *    )
- * Returns { locals: Set<string>, body: string-without-import-lines }
- * Note: heuristic (regex-based); good for 80–90% of real-world cases.
+ * Unused import detector (indent + multi-line; skips side-effect imports)
  */
-function extractPythonLocalsAndBody(text) {
-  const locals = new Set();
-  const lines = text.split('\n');
-  const keep = [];
-  let inMultiFrom = false; // inside "from X import ( ... )" block
+function detectUnusedImports(code) {
+  const unused = [];
+  const re = /^\s*import\s+(?!['"])([\s\S]*?)\s+from\s+['"][^'"]+['"]/gm;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+  let m;
+  while ((m = re.exec(code))) {
+    const clause = m[1].trim();
 
-    // Strip comments to reduce false matches
-    const stripped = line.replace(/#.*/, '');
-
-    // Multi-line "from ... import (" handling
-    if (inMultiFrom) {
-      // collect names until a closing ')'
-      const end = stripped.includes(')');
-      collectPythonImportedNames(stripped.replace(')', ''), locals);
-      if (end) inMultiFrom = false;
-      // do NOT push import lines to body
+    // namespace: import * as ns from 'x'
+    const nsMatch = clause.match(/^\*\s+as\s+([A-Za-z_$][\w$]*)$/);
+    if (nsMatch) {
+      if (!isUsed(code, nsMatch[1], m.index, m[0].length)) unused.push(nsMatch[1]);
       continue;
     }
 
-    // Single-line: import a, b as bb
-    const imp = stripped.match(/^\s*import\s+(.+)\s*$/);
-    if (imp) {
-      collectPythonImportClause(imp[1], locals);
-      continue; // skip import line from body
+    // default + named
+    let defaultName = null;
+    let namedBlock = null;
+    const firstComma = topLevelCommaIndex(clause);
+
+    if (firstComma === -1) {
+      if (clause.startsWith('{')) namedBlock = clause;
+      else defaultName = clause;
+    } else {
+      defaultName = clause.slice(0, firstComma).trim();
+      namedBlock  = clause.slice(firstComma + 1).trim();
     }
 
-    // Single-line: from pkg import a, b as bb
-    const fromImp = stripped.match(/^\s*from\s+[A-Za-z0-9_\.]+\s+import\s+(.+)\s*$/);
-    if (fromImp) {
-      const clause = fromImp[1].trim();
-      if (clause.startsWith('(') && !clause.includes(')')) {
-        inMultiFrom = true;
-        const inner = clause.replace('(', '');
-        collectPythonImportedNames(inner, locals);
-        continue;
+    if (defaultName && !defaultName.startsWith('{')) {
+      if (!isUsed(code, defaultName, m.index, m[0].length)) unused.push(defaultName);
+    }
+
+    if (namedBlock) {
+      const inner = (namedBlock.match(/\{([^}]*)\}/) || [,''])[1];
+      for (const raw of inner.split(',').map(s => s.trim()).filter(Boolean)) {
+        const alias = raw.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/i);
+        const name = alias ? alias[2] : raw;
+        if (name && !isUsed(code, name, m.index, m[0].length)) unused.push(name);
       }
-      collectPythonImportedNames(clause, locals);
-      continue;
-    }
-
-    // keep non-import lines for usage checks
-    keep.push(line);
-  }
-
-  const body = keep.join('\n');
-  return { locals: Array.from(locals), body };
-}
-
-// Parses "a, b as bb, c" from either "import" or "from ... import ..."
-function collectPythonImportedNames(clause, outSet) {
-  const parts = clause.split(',').map(s => s.trim()).filter(Boolean);
-  for (const p of parts) {
-    // handle trailing comments removed earlier
-    const seg = p.replace(/\s+#.*/, '').trim();
-    if (!seg) continue;
-
-    // a as b
-    const asMatch = seg.match(/^([A-Za-z_][A-Za-z0-9_]*)(\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/);
-    if (asMatch) {
-      const local = asMatch[3] || asMatch[1];
-      outSet.add(local);
-      continue;
-    }
-
-    // fallback: bare identifier
-    const bare = seg.match(/^([A-Za-z_][A-Za-z0-9_]*)$/);
-    if (bare) {
-      outSet.add(bare[1]);
     }
   }
+
+  return unused;
 }
 
-// Parses the clause of "import a, b as bb"
-function collectPythonImportClause(clause, outSet) {
-  collectPythonImportedNames(clause, outSet);
+function topLevelCommaIndex(s) {
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') depth--;
+    else if (ch === ',' && depth === 0) return i;
+  }
+  return -1;
 }
 
+function isUsed(code, ident, importStart, importLen) {
+  const before = code.slice(0, importStart);
+  const after  = code.slice(importStart + importLen);
+  const body   = before + '\n' + after;
+  const reWord = new RegExp(`\\b${escapeRegExp(ident)}\\b`, 'g');
+  return reWord.test(body);
+}
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function renderMarkdown(report) {
+  const s = report.stats;
+  const lines = [
+    `# SweepstacX — Scan Report`,
+    ``,
+    `**Scanned at:** ${report.meta.scanned_at}`,
+    ``
+  ];
+
+  if (report.warnings && report.warnings.length) {
+    lines.push(`## Warnings`);
+    for (const w of report.warnings) lines.push(`- ${w}`);
+    lines.push('');
+  }
+
+  lines.push(
+    `## Summary`,
+    `- Files scanned: **${s.files_scanned}**`,
+    `- Dead files: **${s.dead_files}**`,
+    `- Unused imports: **${s.unused_imports}**`,
+    `- Duplicate blocks: **${s.duplicate_blocks}**`,
+    `- Stale configs: **${s.stale_configs}**`,
+    ``,
+    `## Issues`
+  );
+
+  if (s.unused_imports === 0) {
+    lines.push(`_No unused imports detected._`);
+  } else {
+    for (const i of report.issues.filter(i => i.type === 'unused_import')) {
+      lines.push(`- Unused import \`${i.symbol}\` in \`${i.file}\``);
+    }
+  }
+
+  lines.push('', `_Generated by SweepstacX v${report.meta.version}_`, '');
+  return lines.join('\n');
+}

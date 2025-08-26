@@ -1,15 +1,19 @@
 {
-  "repo": "my-repo",
-  "root": "/home/inmoa/dev/my-repo",
-  "scanned_at": "2025-08-22T18:23:46.715Z",
+  "meta": {
+    "tool": "SweepstacX",
+    "version": "0.1.7",
+    "scanned_at": "2025-08-26T19:50:22.916Z",
+    "root": "/home/inmoa/SweepstacX/empty-dir"
+  },
+  "warnings": [
+    "No files matched scan patterns (*.js, *.mjs, *.cjs). Check --path or ignore globs."
+  ],
   "stats": {
     "files_scanned": 0,
-    "dead_files": 0,
     "unused_imports": 0,
     "duplicate_blocks": 0,
-    "stale_configs": 0,
-    "loc_removed": 0
+    "dead_files": 0,
+    "stale_configs": 0
   },
-  "issues": [],
-  "patches": []
+  "issues": []
 }

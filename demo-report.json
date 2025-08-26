@@ -1,0 +1,31 @@
+{
+  "repo": "SweepstacX",
+  "root": "/home/inmoa/SweepstacX",
+  "scanned_at": "2025-08-25T06:44:53.525Z",
+  "stats": {
+    "files_scanned": 21,
+    "dead_files": 0,
+    "unused_imports": 3,
+    "duplicate_blocks": 0,
+    "stale_configs": 0,
+    "loc_removed": 0
+  },
+  "issues": [
+    {
+      "type": "unused_import",
+      "file": "tests/fixtures/sample-project/src/bad.js",
+      "token": "unused"
+    },
+    {
+      "type": "unused_import",
+      "file": "SweeperstacX/examples/sample-project/src/Button.js",
+      "token": "React"
+    },
+    {
+      "type": "unused_import",
+      "file": "SweeperstacX/examples/sample-project/src/Button.js",
+      "token": "clsx"
+    }
+  ],
+  "patches": []
+}

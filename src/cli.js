@@ -1,66 +1,71 @@
 import { Command } from 'commander';
-import pc from 'picocolors';
-import scanCmd from './commands/scan.js';
-import reportCmd from './commands/report.js';
-import patchCmd from './commands/patch.js';
+import runScan from './commands/scan.js';
+import runReport from './commands/report.js';
+import runPatch from './commands/patch.js';
+
+import runCheck from './commands/check.js';
+import runLint from './commands/lint.js';
+import runDeps from './commands/deps.js';
+import runDupes from './commands/dupes.js';
+import runComplexity from './commands/complexity.js';
+import runFuzz from './commands/fuzz.js';
 
 const program = new Command();
-
 program
   .name('sweepstacx')
   .description('Repo sweeper for modern dev stacks: scan, report, patch.')
-  .version('0.1.4');
+  .version('0.1.7');
 
-// scan
 program
   .command('scan')
-  .description('Scan the repository for obvious issues and cache results')
-  .option('--path <dir>', 'target directory', '.')
-  .option('--lang <auto|js|ts|py>', 'language focus (default: auto)', 'auto')
-  .option('--verbose', 'verbose logging', false)
-  .option('--quiet', 'suppress summary log line', false)
-  .action(async (opts) => {
-    try { await scanCmd(opts); }
-    catch (e) { console.error(pc.red(`Scan failed: ${e?.message || e}`)); process.exitCode = 1; }
-  });
+  .option('--path <path>', 'path to scan', '.')
+  .option('--lang <lang>', 'language hint (js, ts)', 'js')
+  .option('--config <file>', 'config file (.sweeperc.json)')
+  .action(async (opts) => { await runScan(opts); });
 
-// report
 program
   .command('report')
-  .description('Generate Markdown + JSON report from last scan')
-  .option('--out <base>', 'output base filename (no extension)', 'sweepstacx-report')
-  .option('--json', 'print JSON to stdout (no files written)', false)
-  .action(async (opts) => {
-    try { await reportCmd(opts); }
-    catch (e) { console.error(pc.red(`Report failed: ${e?.message || e}`)); process.exitCode = 1; }
-  });
+  .option('--out <base>', 'basename for outputs (json/md)', 'sweepstacx-report')
+  .action(async (opts) => { await runReport(opts); });
 
-// patch
 program
   .command('patch')
-  .description('Generate patch files from last scan; optionally apply')
-  .option('--apply', 'apply edits directly to files', false)
-  .option('--dry-run', 'show what would be applied', false)
-  .action(async (opts) => {
-    try { await patchCmd(opts); }
-    catch (e) { console.error(pc.red(`Patch failed: ${e?.message || e}`)); process.exitCode = 1; }
-  });
+  .option('--apply', 'apply generated patches with git apply', false)
+  .action(async (opts) => { await runPatch(opts); });
 
-// check (scan + JSON to stdout)
 program
   .command('check')
-  .description('Scan + print JSON report to stdout (CI shortcut)')
-  .option('--path <dir>', 'target directory', '.')
-  .option('--lang <auto|js|ts|py>', 'language focus (default: auto)', 'auto')
-  .option('--verbose', 'verbose logging', false)
-  .action(async (opts) => {
-    try {
-      await scanCmd({ ...opts, quiet: true });
-      await reportCmd({ json: true });
-    } catch (e) {
-      console.error(pc.red(`Check failed: ${e?.message || e}`));
-      process.exitCode = 1;
-    }
-  });
+  .description('stats-only CI mode')
+  .option('--path <path>', 'path to scan', '.')
+  .option('--config <file>', 'config file (.sweeperc.json)')
+  .action(async (opts) => { await runCheck(opts); });
+
+program
+  .command('lint')
+  .option('--path <path>', 'path to lint', '.')
+  .option('--fix', 'apply eslint --fix', false)
+  .action(async (opts) => { await runLint(opts); });
+
+program
+  .command('deps')
+  .option('--path <path>', 'path to analyze', '.')
+  .action(async (opts) => { await runDeps(opts); });
+
+program
+  .command('dupes')
+  .option('--path <path>', 'path to analyze', '.')
+  .option('--min-lines <n>', 'minimum duplicate block lines', '5')
+  .action(async (opts) => { await runDupes(opts); });
+
+program
+  .command('complexity')
+  .option('--path <path>', 'path to analyze', '.')
+  .action(async (opts) => { await runComplexity(opts); });
+
+program
+  .command('fuzz')
+  .argument('<file>', 'target JS file to fuzz')
+  .option('--timeout <ms>', 'timeout per case (ms)', '5000')
+  .action(async (file, opts) => { await runFuzz(file, opts); });
 
 program.parseAsync(process.argv);
